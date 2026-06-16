@@ -1,13 +1,5 @@
 node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
 .env
-.env.*
-!.env.example
-local-server.log
-server.out.log
-server.err.log
-data/leads.json
-data/leads.csv
-render_report_doc/
+data/
+.npm-cache/
+*.log

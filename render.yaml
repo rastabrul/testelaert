@@ -1,16 +1,26 @@
 services:
   - type: web
-    name: mide-quiz-site
+    name: almoxarifado-sheets
     runtime: node
     plan: free
+    region: oregon
+    branch: main
+    autoDeploy: true
     buildCommand: npm install
     startCommand: npm start
-    autoDeployTrigger: commit
-    healthCheckPath: /api/health
+    healthCheckPath: /health
     envVars:
-      - key: NODE_VERSION
-        value: 20
-      - key: QUIZ_DATA_DIR
-        value: /tmp/mide-quiz-data
-      - key: GOOGLE_APPS_SCRIPT_URL
+      - key: NODE_ENV
+        value: production
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: GOOGLE_SHEET_ID
+        sync: false
+      - key: GOOGLE_SERVICE_ACCOUNT_EMAIL
+        sync: false
+      - key: GOOGLE_PRIVATE_KEY
         sync: false
