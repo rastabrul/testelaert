@@ -2,14 +2,14 @@ const crypto = require("crypto");
 const fs = require("fs/promises");
 const path = require("path");
 const express = require("express");
-const { google } = require("googleapis");
 
 const PORT = Number(process.env.PORT || 3000);
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "admin";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || crypto.randomBytes(10).toString("base64url");
 const COOKIE_NAME = "almox_session";
-const USE_SHEETS = Boolean(
+const USE_APPS_SCRIPT = Boolean(process.env.GOOGLE_APPS_SCRIPT_URL);
+const USE_SHEETS_API = !USE_APPS_SCRIPT && Boolean(
   process.env.GOOGLE_SHEET_ID &&
   process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL &&
   process.env.GOOGLE_PRIVATE_KEY
@@ -129,14 +129,14 @@ app.use(express.static(path.join(__dirname, "public")));
 let store;
 
 async function main() {
-  store = USE_SHEETS ? new SheetsStore() : new LocalStore();
+  store = USE_APPS_SCRIPT ? new AppsScriptStore() : USE_SHEETS_API ? new SheetsStore() : new LocalStore();
   await store.init();
   await ensureAdminUser();
 
   if (!process.env.ADMIN_PASSWORD) {
     console.log(`Senha inicial do admin gerada: ${ADMIN_PASSWORD}`);
   }
-  if (!USE_SHEETS) {
+  if (!USE_APPS_SCRIPT && !USE_SHEETS_API) {
     console.log("Google Sheets não configurado. Usando data/local-db.json para desenvolvimento.");
   }
 
@@ -147,7 +147,7 @@ async function main() {
 }
 
 function registerRoutes() {
-  app.get("/health", (_req, res) => res.json({ ok: true, storage: USE_SHEETS ? "sheets" : "local" }));
+  app.get("/health", (_req, res) => res.json({ ok: true, storage: storageMode() }));
 
   app.get("/api/session", async (req, res) => {
     const user = await readUserFromRequest(req);
@@ -199,7 +199,7 @@ function registerRoutes() {
         .slice(0, 160)
         .map((movement) => publicMovement(movement, inventory, req.user)),
       summary: buildSummary(inventory, movements, req.user),
-      storage: USE_SHEETS ? "sheets" : "local"
+      storage: storageMode()
     };
 
     if (isAdmin(req.user)) {
@@ -377,6 +377,53 @@ function registerRoutes() {
   });
 }
 
+class AppsScriptStore {
+  constructor() {
+    this.url = process.env.GOOGLE_APPS_SCRIPT_URL;
+  }
+
+  async init() {
+    await this.request("init", {
+      tables: Object.values(TABLES).map((table) => ({
+        title: table.title,
+        headers: table.headers
+      }))
+    });
+  }
+
+  async read(title) {
+    const response = await this.request("read", { title });
+    return response.rows || [];
+  }
+
+  async write(title, rows) {
+    await this.request("write", { title, rows });
+  }
+
+  async append(title, row) {
+    await this.request("append", { title, row });
+  }
+
+  async request(action, payload = {}) {
+    const response = await fetch(this.url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, ...payload })
+    });
+    const text = await response.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (_error) {
+      throw new Error(`Apps Script retornou uma resposta inválida: ${text.slice(0, 180)}`);
+    }
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.message || "Falha ao acessar o Apps Script.");
+    }
+    return data;
+  }
+}
+
 class LocalStore {
   constructor() {
     this.file = path.join(__dirname, "data", "local-db.json");
@@ -418,6 +465,7 @@ class LocalStore {
 
 class SheetsStore {
   constructor() {
+    const { google } = require("googleapis");
     const privateKey = process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n");
     this.spreadsheetId = process.env.GOOGLE_SHEET_ID;
     this.auth = new google.auth.JWT({
@@ -849,6 +897,12 @@ function tableByTitle(title) {
   const table = Object.values(TABLES).find((entry) => entry.title === title);
   if (!table) throw new Error(`Tabela desconhecida: ${title}`);
   return table;
+}
+
+function storageMode() {
+  if (USE_APPS_SCRIPT) return "apps-script";
+  if (USE_SHEETS_API) return "sheets-api";
+  return "local";
 }
 
 function quoteSheet(title) {

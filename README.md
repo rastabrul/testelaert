@@ -1,6 +1,6 @@
 # Almoxarifado com Google Sheets
 
-Sistema de login, permissões, estoque em tempo real, logs e analytics financeiro usando Google Sheets como banco de dados.
+Sistema de login, permissões, estoque em tempo real, logs e analytics financeiro usando uma planilha Google como banco.
 
 ## Senha inicial sugerida
 
@@ -8,11 +8,16 @@ Use esta senha no Render para o primeiro administrador:
 
 `Admin@2026-Lm7Q-92Rk`
 
-Depois do primeiro login, você pode criar/remover vendedores em **Configurações**.
+Login inicial:
 
-## Abas criadas na planilha
+- usuário: `admin`
+- senha: `Admin@2026-Lm7Q-92Rk`
 
-O sistema cria automaticamente estas abas quando tiver acesso de edição:
+## Como a planilha funciona
+
+O Render não escreve direto na planilha. Ele envia os dados para um **Google Apps Script**, igual ao tipo de integração usado em muitos quizzes/formulários.
+
+O Apps Script cria e atualiza estas abas:
 
 - `Produtos`
 - `Usuarios`
@@ -20,31 +25,30 @@ O sistema cria automaticamente estas abas quando tiver acesso de edição:
 - `Logs`
 - `Configuracoes`
 
-Use o ID da planilha editável, o trecho entre `/d/` e `/edit` na URL do Google Sheets. O link publicado `/pubhtml` não serve para escrita.
-
 ## Variáveis no Render
 
-No serviço do Render, abra **Environment** e preencha:
+No Blueprint do Render, preencha:
 
 - `ADMIN_PASSWORD`: `Admin@2026-Lm7Q-92Rk`
-- `GOOGLE_SHEET_ID`: ID da planilha editável
-- `GOOGLE_SERVICE_ACCOUNT_EMAIL`: e-mail da conta de serviço do Google
-- `GOOGLE_PRIVATE_KEY`: chave privada da conta de serviço
+- `GOOGLE_APPS_SCRIPT_URL`: URL do Web App publicado no Apps Script
 
-O `SESSION_SECRET` é gerado pelo próprio Render via `render.yaml`.
+O `SESSION_SECRET` é gerado pelo próprio Render.
 
-## Google Sheets
+## Criar o Apps Script
 
-1. Crie um projeto no Google Cloud.
-2. Ative a **Google Sheets API**.
-3. Crie uma **Service Account**.
-4. Gere uma chave JSON.
-5. Compartilhe a planilha com o e-mail da Service Account como **Editor**.
-6. Copie do JSON:
-   - `client_email` para `GOOGLE_SERVICE_ACCOUNT_EMAIL`
-   - `private_key` para `GOOGLE_PRIVATE_KEY`
+1. Abra a planilha.
+2. Vá em **Extensões** > **Apps Script**.
+3. Apague o código que estiver lá.
+4. Cole o conteúdo do arquivo `google-apps-script.gs`.
+5. Clique em **Implantar** > **Nova implantação**.
+6. Tipo: **App da Web**.
+7. Executar como: **Eu**.
+8. Quem pode acessar: **Qualquer pessoa**.
+9. Clique em **Implantar**.
+10. Copie a URL que termina em `/exec`.
+11. Cole essa URL no Render em `GOOGLE_APPS_SCRIPT_URL`.
 
-Se o Render não aceitar quebras de linha na chave, cole com `\n`; o servidor corrige isso ao iniciar.
+Se você editar o código do Apps Script depois, precisa ir em **Implantar** > **Gerenciar implantações** > editar implantação > **Nova versão**.
 
 ## Rodar localmente
 
@@ -53,17 +57,16 @@ npm install
 npm start
 ```
 
-Sem variáveis do Google, o sistema usa `data/local-db.json` apenas para desenvolvimento.
+Sem `GOOGLE_APPS_SCRIPT_URL`, o sistema usa `data/local-db.json` só para desenvolvimento.
 
 ## Subir no GitHub e Render
 
-1. Crie um repositório no GitHub.
-2. Suba estes arquivos para o repositório.
-3. No Render, clique em **New +** > **Blueprint**.
-4. Conecte o repositório.
-5. O Render vai ler o `render.yaml`.
-6. Preencha as variáveis secretas pedidas.
-7. Clique em **Apply**.
+1. Suba estes arquivos para o GitHub.
+2. No Render, clique em **New +** > **Blueprint**.
+3. Conecte o repositório.
+4. O Render vai ler o `render.yaml`.
+5. Preencha `ADMIN_PASSWORD` e `GOOGLE_APPS_SCRIPT_URL`.
+6. Clique em **Apply**.
 
 O serviço usa:
 
