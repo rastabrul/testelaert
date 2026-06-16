@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: mide-quiz-site
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    autoDeployTrigger: commit
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: QUIZ_DATA_DIR
+        value: /tmp/mide-quiz-data
+      - key: GOOGLE_APPS_SCRIPT_URL
+        sync: false

@@ -1,0 +1,14 @@
+{
+  "name": "mide-quiz-site",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Quiz MIDE com captação de lead, pontuação por plano e integração opcional com Google Sheets.",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && node --check quiz-data.js && node --check public/script.js",
+    "test": "npm run check"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
