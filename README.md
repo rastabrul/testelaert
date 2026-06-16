@@ -25,6 +25,12 @@ O Apps Script cria e atualiza estas abas:
 - `Logs`
 - `Configuracoes`
 
+A aba `Produtos` guarda o estoque atual na coluna `estoqueAtual`.
+A aba `Movimentacoes` guarda o histórico de entradas, saídas, devoluções e ajustes.
+Quando uma saída é registrada, o sistema grava a movimentação e já desconta a quantidade em `Produtos`.
+
+Se a planilha antiga tiver o modelo com `CADASTRO DE ÍTENS`, o Apps Script tenta importar esses exemplos para `Produtos` na primeira inicialização.
+
 ## Variáveis no Render
 
 No Blueprint do Render, preencha:

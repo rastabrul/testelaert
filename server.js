@@ -30,7 +30,8 @@ const TABLES = {
       "precoVenda",
       "ativo",
       "criadoEm",
-      "atualizadoEm"
+      "atualizadoEm",
+      "estoqueAtual"
     ]
   },
   users: {
@@ -149,12 +150,12 @@ async function main() {
 function registerRoutes() {
   app.get("/health", (_req, res) => res.json({ ok: true, storage: storageMode() }));
 
-  app.get("/api/session", async (req, res) => {
+  app.get("/api/session", safe(async (req, res) => {
     const user = await readUserFromRequest(req);
     res.json({ user: user ? publicUser(user) : null, permissions: PERMISSIONS });
-  });
+  }));
 
-  app.post("/api/login", async (req, res) => {
+  app.post("/api/login", safe(async (req, res) => {
     const username = clean(req.body.usuario || req.body.username);
     const password = String(req.body.senha || req.body.password || "");
     const users = await getUsers();
@@ -173,9 +174,9 @@ function registerRoutes() {
     }));
     await writeLog(req, user, "login", "Usuarios", user.id);
     res.json({ user: publicUser(user) });
-  });
+  }));
 
-  app.post("/api/logout", requireAuth, async (req, res) => {
+  app.post("/api/logout", requireAuth, safe(async (req, res) => {
     await writeLog(req, req.user, "logout", "Usuarios", req.user.id);
     res.setHeader("Set-Cookie", serializeCookie(COOKIE_NAME, "", {
       httpOnly: true,
@@ -184,9 +185,9 @@ function registerRoutes() {
       maxAge: 0
     }));
     res.json({ ok: true });
-  });
+  }));
 
-  app.get("/api/bootstrap", requireAuth, async (req, res) => {
+  app.get("/api/bootstrap", requireAuth, safe(async (req, res) => {
     const [products, movements] = await Promise.all([getProducts(), getMovements()]);
     const inventory = buildInventory(products, movements);
     const response = {
@@ -208,22 +209,23 @@ function registerRoutes() {
     }
 
     res.json(response);
-  });
+  }));
 
-  app.post("/api/products", requireAuth, requirePermission("manageProducts"), async (req, res) => {
+  app.post("/api/products", requireAuth, requirePermission("manageProducts"), safe(async (req, res) => {
     const products = await getProducts();
     const payload = normalizeProduct(req.body);
     if (!payload.nome) return res.status(400).json({ message: "Informe o nome do produto." });
     payload.id = makeId("PROD");
+    payload.estoqueAtual = payload.estoqueInicial;
     payload.criadoEm = now();
     payload.atualizadoEm = payload.criadoEm;
     products.push(payload);
     await saveProducts(products);
     await writeLog(req, req.user, "produto_criado", "Produtos", payload.id, { nome: payload.nome });
-    res.status(201).json({ product: publicProduct({ ...payload, estoqueAtual: payload.estoqueInicial }, req.user) });
-  });
+    res.status(201).json({ product: publicProduct(payload, req.user) });
+  }));
 
-  app.put("/api/products/:id", requireAuth, requirePermission("manageProducts"), async (req, res) => {
+  app.put("/api/products/:id", requireAuth, requirePermission("manageProducts"), safe(async (req, res) => {
     const products = await getProducts();
     const index = products.findIndex((product) => product.id === req.params.id);
     if (index < 0) return res.status(404).json({ message: "Produto não encontrado." });
@@ -233,16 +235,17 @@ function registerRoutes() {
       ...normalizeProduct(req.body),
       id: products[index].id,
       criadoEm: products[index].criadoEm,
+      estoqueAtual: products[index].estoqueAtual,
       atualizadoEm: now()
     };
     if (!updated.nome) return res.status(400).json({ message: "Informe o nome do produto." });
     products[index] = updated;
     await saveProducts(products);
     await writeLog(req, req.user, "produto_atualizado", "Produtos", updated.id, { nome: updated.nome });
-    res.json({ product: publicProduct({ ...updated, estoqueAtual: 0 }, req.user) });
-  });
+    res.json({ product: publicProduct(updated, req.user) });
+  }));
 
-  app.delete("/api/products/:id", requireAuth, requirePermission("manageProducts"), async (req, res) => {
+  app.delete("/api/products/:id", requireAuth, requirePermission("manageProducts"), safe(async (req, res) => {
     const products = await getProducts();
     const index = products.findIndex((product) => product.id === req.params.id);
     if (index < 0) return res.status(404).json({ message: "Produto não encontrado." });
@@ -251,9 +254,9 @@ function registerRoutes() {
     await saveProducts(products);
     await writeLog(req, req.user, "produto_desativado", "Produtos", req.params.id);
     res.json({ ok: true });
-  });
+  }));
 
-  app.post("/api/movements", requireAuth, async (req, res) => {
+  app.post("/api/movements", requireAuth, safe(async (req, res) => {
     const tipo = clean(req.body.tipo || "saida");
     if (!["entrada", "saida", "devolucao", "ajuste"].includes(tipo)) {
       return res.status(400).json({ message: "Tipo de movimentação inválido." });
@@ -267,8 +270,8 @@ function registerRoutes() {
 
     const products = await getProducts();
     const movements = await getMovements();
-    const inventory = buildInventory(products, movements);
-    const product = inventory.find((entry) => entry.id === clean(req.body.produtoId));
+    const productIndex = products.findIndex((entry) => entry.id === clean(req.body.produtoId));
+    const product = productIndex >= 0 ? products[productIndex] : null;
     const quantidade = Math.abs(toNumber(req.body.quantidade));
 
     if (!product || !product.ativo) return res.status(404).json({ message: "Produto não encontrado." });
@@ -292,20 +295,21 @@ function registerRoutes() {
     };
 
     movements.push(movement);
-    await saveMovements(movements);
+    products[productIndex] = applyMovementToProduct(product, movement);
+    await saveProductsAndMovements(products, movements);
     await writeLog(req, req.user, "movimentacao_registrada", "Movimentacoes", movement.id, {
       tipo: movement.tipo,
       produto: product.nome,
       quantidade
     });
-    res.status(201).json({ movement: publicMovement(movement, inventory, req.user) });
-  });
+    res.status(201).json({ movement: publicMovement(movement, products, req.user) });
+  }));
 
-  app.get("/api/users", requireAuth, requireAdmin, async (_req, res) => {
+  app.get("/api/users", requireAuth, requireAdmin, safe(async (_req, res) => {
     res.json({ users: (await getUsers()).map(publicUser), permissions: PERMISSIONS });
-  });
+  }));
 
-  app.post("/api/users", requireAuth, requireAdmin, async (req, res) => {
+  app.post("/api/users", requireAuth, requireAdmin, safe(async (req, res) => {
     const users = await getUsers();
     const generatedPassword = clean(req.body.senha) || generatePassword();
     const user = normalizeUser({
@@ -329,9 +333,9 @@ function registerRoutes() {
     await saveUsers(users);
     await writeLog(req, req.user, "usuario_criado", "Usuarios", user.id, { usuario: user.usuario });
     res.status(201).json({ user: publicUser(user), generatedPassword });
-  });
+  }));
 
-  app.put("/api/users/:id", requireAuth, requireAdmin, async (req, res) => {
+  app.put("/api/users/:id", requireAuth, requireAdmin, safe(async (req, res) => {
     const users = await getUsers();
     const index = users.findIndex((user) => user.id === req.params.id);
     if (index < 0) return res.status(404).json({ message: "Usuário não encontrado." });
@@ -356,9 +360,9 @@ function registerRoutes() {
     await saveUsers(users);
     await writeLog(req, req.user, "usuario_atualizado", "Usuarios", next.id, { usuario: next.usuario });
     res.json({ user: publicUser(next) });
-  });
+  }));
 
-  app.delete("/api/users/:id", requireAuth, requireAdmin, async (req, res) => {
+  app.delete("/api/users/:id", requireAuth, requireAdmin, safe(async (req, res) => {
     const users = await getUsers();
     const index = users.findIndex((user) => user.id === req.params.id);
     if (index < 0) return res.status(404).json({ message: "Usuário não encontrado." });
@@ -370,10 +374,17 @@ function registerRoutes() {
     await saveUsers(users);
     await writeLog(req, req.user, "usuario_desativado", "Usuarios", users[index].id, { usuario: users[index].usuario });
     res.json({ ok: true });
-  });
+  }));
 
   app.get("*", (_req, res) => {
     res.sendFile(path.join(__dirname, "public", "index.html"));
+  });
+
+  app.use((error, _req, res, _next) => {
+    console.error(error);
+    res.status(500).json({
+      message: error.message || "Erro interno no servidor."
+    });
   });
 }
 
@@ -404,12 +415,29 @@ class AppsScriptStore {
     await this.request("append", { title, row });
   }
 
+  async bulkWrite(tables) {
+    await this.request("bulkWrite", { tables });
+  }
+
   async request(action, payload = {}) {
-    const response = await fetch(this.url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action, ...payload })
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    let response;
+    try {
+      response = await fetch(this.url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, ...payload }),
+        signal: controller.signal
+      });
+    } catch (error) {
+      if (error.name === "AbortError") {
+        throw new Error("O Apps Script demorou para responder. Confira a URL /exec no Render e a implantacao do script.");
+      }
+      throw new Error(`Falha ao chamar o Apps Script: ${error.message}`);
+    } finally {
+      clearTimeout(timeout);
+    }
     const text = await response.text();
     let data;
     try {
@@ -455,6 +483,13 @@ class LocalStore {
   async append(title, row) {
     this.data[title] ||= [];
     this.data[title].push(row);
+    await this.save();
+  }
+
+  async bulkWrite(tables) {
+    Object.entries(tables).forEach(([title, rows]) => {
+      this.data[title] = rows;
+    });
     await this.save();
   }
 
@@ -540,7 +575,33 @@ class SheetsStore {
 
 async function ensureAdminUser() {
   const users = await getUsers();
-  if (users.some((user) => user.usuario === ADMIN_USERNAME)) return;
+  const existingIndex = users.findIndex((user) => user.usuario === ADMIN_USERNAME);
+  if (existingIndex >= 0) {
+    const admin = users[existingIndex];
+    let changed = false;
+    if (admin.papel !== "admin") {
+      admin.papel = "admin";
+      changed = true;
+    }
+    if (!admin.ativo) {
+      admin.ativo = true;
+      changed = true;
+    }
+    if (JSON.stringify(admin.permissoes) !== JSON.stringify(ROLE_PRESETS.admin)) {
+      admin.permissoes = ROLE_PRESETS.admin;
+      changed = true;
+    }
+    if (process.env.ADMIN_PASSWORD && !verifyPassword(ADMIN_PASSWORD, admin.senhaHash)) {
+      admin.senhaHash = hashPassword(ADMIN_PASSWORD);
+      changed = true;
+    }
+    if (changed) {
+      admin.atualizadoEm = now();
+      users[existingIndex] = admin;
+      await saveUsers(users);
+    }
+    return;
+  }
   users.unshift(normalizeUser({
     id: "USR-ADMIN",
     nome: "Administrador",
@@ -561,6 +622,21 @@ async function getProducts() {
 
 async function saveProducts(products) {
   await store.write(TABLES.products.title, products.map(productRow));
+}
+
+async function saveProductsAndMovements(products, movements) {
+  const tables = {
+    [TABLES.products.title]: products.map(productRow),
+    [TABLES.movements.title]: movements.map(movementRow)
+  };
+
+  if (typeof store.bulkWrite === "function") {
+    await store.bulkWrite(tables);
+    return;
+  }
+
+  await saveProducts(products);
+  await saveMovements(movements);
 }
 
 async function getUsers() {
@@ -597,17 +673,20 @@ async function writeLog(req, user, action, entity, entityId, details = {}) {
   });
 }
 
-function buildInventory(products, movements) {
-  const stockByProduct = new Map(products.map((product) => [product.id, product.estoqueInicial]));
-  for (const movement of movements) {
-    const current = stockByProduct.get(movement.produtoId) || 0;
-    const signal = movement.tipo === "saida" ? -1 : 1;
-    stockByProduct.set(movement.produtoId, current + signal * movement.quantidade);
-  }
+function buildInventory(products) {
   return products.map((product) => ({
     ...product,
-    estoqueAtual: stockByProduct.get(product.id) || 0
+    estoqueAtual: toNumber(product.estoqueAtual)
   }));
+}
+
+function applyMovementToProduct(product, movement) {
+  const signal = movement.tipo === "saida" ? -1 : 1;
+  return {
+    ...product,
+    estoqueAtual: Math.max(0, toNumber(product.estoqueAtual) + signal * movement.quantidade),
+    atualizadoEm: now()
+  };
 }
 
 function buildSummary(products, movements, user) {
@@ -701,6 +780,7 @@ function normalizeProduct(input = {}) {
     categoria: clean(input.categoria),
     localizacao: clean(input.localizacao),
     estoqueInicial: toNumber(input.estoqueInicial),
+    estoqueAtual: clean(input.estoqueAtual) === "" ? toNumber(input.estoqueInicial) : toNumber(input.estoqueAtual),
     estoqueMinimo: toNumber(input.estoqueMinimo),
     precoCusto: toNumber(input.precoCusto),
     precoVenda: toNumber(input.precoVenda),
@@ -754,11 +834,14 @@ function movementRow(movement) {
   return movement;
 }
 
-async function requireAuth(req, res, next) {
-  const user = await readUserFromRequest(req);
-  if (!user) return res.status(401).json({ message: "Faça login para continuar." });
-  req.user = user;
-  next();
+function requireAuth(req, res, next) {
+  readUserFromRequest(req)
+    .then((user) => {
+      if (!user) return res.status(401).json({ message: "Faca login para continuar." });
+      req.user = user;
+      next();
+    })
+    .catch(next);
 }
 
 function requireAdmin(req, res, next) {
@@ -772,6 +855,12 @@ function requirePermission(permission) {
       return res.status(403).json({ message: "Sem permissão para esta ação." });
     }
     next();
+  };
+}
+
+function safe(handler) {
+  return (req, res, next) => {
+    Promise.resolve(handler(req, res, next)).catch(next);
   };
 }
 
@@ -871,7 +960,12 @@ function clean(value) {
 }
 
 function toNumber(value) {
-  const parsed = Number(String(value ?? "0").replace(/\./g, "").replace(",", "."));
+  let text = clean(value).replace(/[^\d,.-]/g, "");
+  if (!text) return 0;
+  if (text.includes(",")) {
+    text = text.replace(/\./g, "").replace(",", ".");
+  }
+  const parsed = Number(text);
   return Number.isFinite(parsed) ? parsed : 0;
 }
 

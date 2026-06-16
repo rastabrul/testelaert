@@ -232,12 +232,12 @@ function productForm() {
         </div>
         <label class="field"><span>Localização</span><input name="localizacao" value="${escapeAttr(product.localizacao || "")}" /></label>
         <div class="two">
-          <label class="field"><span>Estoque inicial</span><input name="estoqueInicial" type="number" step="0.01" value="${escapeAttr(product.estoqueInicial || 0)}" /></label>
-          <label class="field"><span>Estoque mínimo</span><input name="estoqueMinimo" type="number" step="0.01" value="${escapeAttr(product.estoqueMinimo || 0)}" /></label>
+          <label class="field"><span>Estoque inicial</span><input name="estoqueInicial" inputmode="decimal" value="${escapeAttr(product.estoqueInicial || 0)}" /></label>
+          <label class="field"><span>Estoque mínimo</span><input name="estoqueMinimo" inputmode="decimal" value="${escapeAttr(product.estoqueMinimo || 0)}" /></label>
         </div>
         <div class="two">
-          <label class="field"><span>Custo</span><input name="precoCusto" type="number" step="0.01" value="${escapeAttr(product.precoCusto || 0)}" /></label>
-          <label class="field"><span>Venda</span><input name="precoVenda" type="number" step="0.01" value="${escapeAttr(product.precoVenda || 0)}" /></label>
+          <label class="field"><span>Custo</span><input name="precoCusto" inputmode="decimal" value="${escapeAttr(product.precoCusto || 0)}" /></label>
+          <label class="field"><span>Venda</span><input name="precoVenda" inputmode="decimal" value="${escapeAttr(product.precoVenda || 0)}" /></label>
         </div>
         <div class="toolbar" style="justify-content:flex-start">
           <button class="btn primary" type="submit">Salvar produto</button>
@@ -281,13 +281,13 @@ function movementForm(defaultType) {
         </select>
       </label>
       <div class="two">
-        <label class="field"><span>Quantidade</span><input name="quantidade" type="number" step="0.01" min="0.01" required /></label>
+        <label class="field"><span>Quantidade</span><input name="quantidade" inputmode="decimal" required /></label>
         <label class="field"><span>O.S.</span><input name="os" /></label>
       </div>
       ${isAdmin() ? `
         <div class="two">
-          <label class="field"><span>Custo unitário</span><input name="custoUnitario" type="number" step="0.01" /></label>
-          <label class="field"><span>Venda unitária</span><input name="vendaUnitario" type="number" step="0.01" /></label>
+          <label class="field"><span>Custo unitário</span><input name="custoUnitario" inputmode="decimal" /></label>
+          <label class="field"><span>Venda unitária</span><input name="vendaUnitario" inputmode="decimal" /></label>
         </div>
       ` : ""}
       <label class="field"><span>Observação</span><textarea name="observacao"></textarea></label>
@@ -460,7 +460,27 @@ async function onSubmit(event) {
   event.preventDefault();
   const form = event.target;
   const data = Object.fromEntries(new FormData(form).entries());
+  const button = form.querySelector('button[type="submit"]');
+  const originalText = button ? button.textContent : "";
 
+  if (button) {
+    button.disabled = true;
+    button.textContent = form.id === "loginForm" ? "Entrando..." : "Salvando...";
+  }
+
+  try {
+    await submitForm(form, data);
+  } catch (error) {
+    notice(error.message || "Nao foi possivel concluir a acao.");
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
+}
+
+async function submitForm(form, data) {
   if (form.id === "loginForm") {
     const response = await api("/api/login", { method: "POST", body: data });
     state.user = response.user;
@@ -499,56 +519,60 @@ async function onSubmit(event) {
     const response = await api(id ? `/api/users/${id}` : "/api/users", { method: id ? "PUT" : "POST", body: data });
     state.editingUser = null;
     await loadData();
-    notice(response.generatedPassword ? `Senha gerada: ${response.generatedPassword}` : "Usuário salvo.");
+    notice(response.generatedPassword ? `Senha gerada: ${response.generatedPassword}` : "Usuario salvo.");
   }
 }
 
 async function onClick(event) {
-  const view = event.target.closest("[data-view]")?.dataset.view;
-  if (view) {
-    state.view = view;
-    state.query = "";
-    render();
-    return;
-  }
+  try {
+    const view = event.target.closest("[data-view]")?.dataset.view;
+    if (view) {
+      state.view = view;
+      state.query = "";
+      render();
+      return;
+    }
 
-  const action = event.target.closest("[data-action]")?.dataset.action;
-  const id = event.target.closest("[data-id]")?.dataset.id;
-  if (!action) return;
+    const action = event.target.closest("[data-action]")?.dataset.action;
+    const id = event.target.closest("[data-id]")?.dataset.id;
+    if (!action) return;
 
-  if (action === "logout") {
-    await api("/api/logout", { method: "POST", body: {} });
-    state.user = null;
-    state.data = null;
-    render();
-  }
-  if (action === "new-product") {
-    state.editingProduct = null;
-    render();
-  }
-  if (action === "edit-product") {
-    state.editingProduct = state.data.products.find((product) => product.id === id);
-    render();
-  }
-  if (action === "cancel-product") {
-    state.editingProduct = null;
-    render();
-  }
-  if (action === "delete-product" && confirm("Remover este produto?")) {
-    await api(`/api/products/${id}`, { method: "DELETE" });
-    await loadData();
-  }
-  if (action === "edit-user") {
-    state.editingUser = state.data.users.find((user) => user.id === id);
-    render();
-  }
-  if (action === "cancel-user") {
-    state.editingUser = null;
-    render();
-  }
-  if (action === "delete-user" && confirm("Remover este usuário?")) {
-    await api(`/api/users/${id}`, { method: "DELETE" });
-    await loadData();
+    if (action === "logout") {
+      await api("/api/logout", { method: "POST", body: {} });
+      state.user = null;
+      state.data = null;
+      render();
+    }
+    if (action === "new-product") {
+      state.editingProduct = null;
+      render();
+    }
+    if (action === "edit-product") {
+      state.editingProduct = state.data.products.find((product) => product.id === id);
+      render();
+    }
+    if (action === "cancel-product") {
+      state.editingProduct = null;
+      render();
+    }
+    if (action === "delete-product" && confirm("Remover este produto?")) {
+      await api(`/api/products/${id}`, { method: "DELETE" });
+      await loadData();
+    }
+    if (action === "edit-user") {
+      state.editingUser = state.data.users.find((user) => user.id === id);
+      render();
+    }
+    if (action === "cancel-user") {
+      state.editingUser = null;
+      render();
+    }
+    if (action === "delete-user" && confirm("Remover este usuário?")) {
+      await api(`/api/users/${id}`, { method: "DELETE" });
+      await loadData();
+    }
+  } catch (error) {
+    notice(error.message || "Nao foi possivel concluir a acao.");
   }
 }
 
@@ -576,22 +600,34 @@ function onChange(event) {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    method: options.method || "GET",
-    headers: options.body ? { "Content-Type": "application/json" } : undefined,
-    body: options.body ? JSON.stringify(options.body) : undefined
-  });
-  if (response.status === 401 && options.allowGuest) return response.json();
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    if (response.status === 401) {
-      state.user = null;
-      state.data = null;
-      render();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs || 20000);
+  try {
+    const response = await fetch(path, {
+      method: options.method || "GET",
+      headers: options.body ? { "Content-Type": "application/json" } : undefined,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: controller.signal
+    });
+    if (response.status === 401 && options.allowGuest) return response.json();
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 401) {
+        state.user = null;
+        state.data = null;
+        render();
+      }
+      throw new Error(payload.message || "Nao foi possivel concluir a acao.");
     }
-    throw notice(payload.message || "Não foi possível concluir a ação.");
+    return payload;
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error("O servidor demorou para responder. Confira as variaveis do Render e a URL do Apps Script.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
   }
-  return payload;
 }
 
 function can(permission) {
@@ -651,7 +687,7 @@ function notice(message) {
   clearTimeout(notice.timer);
   notice.timer = setTimeout(() => {
     toast.hidden = true;
-  }, 5000);
+  }, 8000);
   return new Error(message);
 }
 
