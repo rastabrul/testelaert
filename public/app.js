@@ -622,7 +622,7 @@ async function api(path, options = {}) {
     return payload;
   } catch (error) {
     if (error.name === "AbortError") {
-      throw new Error("O servidor demorou para responder. Confira as variaveis do Render e a URL do Apps Script.");
+      throw new Error("O servidor demorou para responder. Confira as variaveis do Render e do Supabase.");
     }
     throw error;
   } finally {
@@ -671,8 +671,7 @@ function roleLabel(role) {
 
 function storageLabel(storage) {
   return {
-    "apps-script": "Google Sheets",
-    "sheets-api": "Google Sheets API",
+    supabase: "Supabase",
     local: "Local"
   }[storage] || "Local";
 }

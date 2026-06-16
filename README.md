@@ -1,81 +1,107 @@
-# Almoxarifado com Google Sheets
+# Almoxarifado com Supabase
 
-Sistema de login, permissões, estoque em tempo real, logs e analytics financeiro usando uma planilha Google como banco.
+Sistema de almoxarifado com login, permissoes, produtos, estoque em tempo real, movimentacoes, logs e analytics financeiro. O banco principal agora e o Supabase.
 
-## Senha inicial sugerida
+## Primeiro login
 
-Use esta senha no Render para o primeiro administrador:
-
-`Admin@2026-Lm7Q-92Rk`
+No Render, preencha a variavel `ADMIN_PASSWORD` com uma senha forte escolhida por voce.
 
 Login inicial:
 
-- usuário: `admin`
-- senha: `Admin@2026-Lm7Q-92Rk`
+- usuario: `admin`
+- senha: a senha que voce colocou em `ADMIN_PASSWORD`
 
-## Como a planilha funciona
+Nao salve essa senha no GitHub.
 
-O Render não escreve direto na planilha. Ele envia os dados para um **Google Apps Script**, igual ao tipo de integração usado em muitos quizzes/formulários.
+## O que fica salvo no Supabase
 
-O Apps Script cria e atualiza estas abas:
+O arquivo `supabase-schema.sql` cria estas tabelas:
 
-- `Produtos`
-- `Usuarios`
-- `Movimentacoes`
-- `Logs`
-- `Configuracoes`
+- `products`: cadastro dos produtos e estoque atual.
+- `movements`: entradas, saidas, devolucoes e ajustes.
+- `app_users`: usuarios, vendedores e permissoes.
+- `app_logs`: tudo que os usuarios fazem no sistema.
+- `settings`: configuracoes futuras.
+- `financial_summary`: visao de receita, custo e lucro bruto das saidas.
 
-A aba `Produtos` guarda o estoque atual na coluna `estoqueAtual`.
-A aba `Movimentacoes` guarda o histórico de entradas, saídas, devoluções e ajustes.
-Quando uma saída é registrada, o sistema grava a movimentação e já desconta a quantidade em `Produtos`.
+Quando uma saida e registrada, o sistema grava uma linha em `movements` e desconta a quantidade em `products.estoque_atual`.
 
-Se a planilha antiga tiver o modelo com `CADASTRO DE ÍTENS`, o Apps Script tenta importar esses exemplos para `Produtos` na primeira inicialização.
+## Criar o banco no Supabase
 
-## Variáveis no Render
+1. Crie um projeto em [Supabase](https://supabase.com/).
+2. Abra o projeto.
+3. Va em **SQL Editor**.
+4. Clique em **New query**.
+5. Cole todo o conteudo do arquivo `supabase-schema.sql`.
+6. Clique em **Run**.
+7. Depois va em **Table Editor** e confira as tabelas `products`, `movements`, `app_users`, `app_logs` e `settings`.
+
+## Pegar as chaves do Supabase
+
+No Supabase:
+
+1. Va em **Project Settings**.
+2. Abra **API Keys** ou **API**.
+3. Copie a **Project URL** para `SUPABASE_URL`.
+4. Copie a **Secret key** para `SUPABASE_SERVICE_ROLE_KEY`.
+
+Se o seu painel mostrar chaves antigas, use a chave `service_role` no campo `SUPABASE_SERVICE_ROLE_KEY`.
+
+Nunca coloque essa chave no frontend, no GitHub ou em conversa publica. Ela deve ficar somente nas variaveis secretas do Render.
+
+## Variaveis no Render
 
 No Blueprint do Render, preencha:
 
-- `ADMIN_PASSWORD`: `Admin@2026-Lm7Q-92Rk`
-- `GOOGLE_APPS_SCRIPT_URL`: URL do Web App publicado no Apps Script
+- `ADMIN_PASSWORD`: senha forte escolhida por voce
+- `SUPABASE_URL`: URL do projeto Supabase, exemplo `https://xxxxx.supabase.co`
+- `SUPABASE_SERVICE_ROLE_KEY`: Secret key ou service_role key do Supabase
 
-O `SESSION_SECRET` é gerado pelo próprio Render.
+O `SESSION_SECRET` e gerado pelo proprio Render.
 
-## Criar o Apps Script
+Na tela do Blueprint:
 
-1. Abra a planilha.
-2. Vá em **Extensões** > **Apps Script**.
-3. Apague o código que estiver lá.
-4. Cole o conteúdo do arquivo `google-apps-script.gs`.
-5. Clique em **Implantar** > **Nova implantação**.
-6. Tipo: **App da Web**.
-7. Executar como: **Eu**.
-8. Quem pode acessar: **Qualquer pessoa**.
-9. Clique em **Implantar**.
-10. Copie a URL que termina em `/exec`.
-11. Cole essa URL no Render em `GOOGLE_APPS_SCRIPT_URL`.
+- **Blueprint Name**: pode ser `almoxarifado-supabase`
+- **Branch**: `main`
+- **Blueprint Path**: deixe `render.yaml`
 
-Se você editar o código do Apps Script depois, precisa ir em **Implantar** > **Gerenciar implantações** > editar implantação > **Nova versão**.
+## Subir no GitHub e Render
+
+1. Suba estes arquivos para o GitHub.
+2. No Render, clique em **New +** > **Blueprint**.
+3. Conecte o repositorio.
+4. O Render vai ler o `render.yaml`.
+5. Preencha `ADMIN_PASSWORD`, `SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY`.
+6. Clique em **Apply** ou **Deploy Blueprint**.
+
+O servico usa:
+
+- Build command: `npm install`
+- Start command: `npm start`
+- Health check: `/health`
 
 ## Rodar localmente
+
+Crie um arquivo `.env` com base em `.env.example` e preencha as variaveis.
+
+Depois rode:
 
 ```bash
 npm install
 npm start
 ```
 
-Sem `GOOGLE_APPS_SCRIPT_URL`, o sistema usa `data/local-db.json` só para desenvolvimento.
+Sem `SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY`, o sistema usa `data/local-db.json` apenas para teste local.
 
-## Subir no GitHub e Render
+## Importar produtos antigos
 
-1. Suba estes arquivos para o GitHub.
-2. No Render, clique em **New +** > **Blueprint**.
-3. Conecte o repositório.
-4. O Render vai ler o `render.yaml`.
-5. Preencha `ADMIN_PASSWORD` e `GOOGLE_APPS_SCRIPT_URL`.
-6. Clique em **Apply**.
+Se voce ja tem produtos em planilha:
 
-O serviço usa:
+1. Exporte a planilha como CSV.
+2. No Supabase, abra `products`.
+3. Use **Import data from CSV**.
+4. Garanta que a coluna `id` esteja preenchida.
 
-- Build command: `npm install`
-- Start command: `npm start`
-- Health check: `/health`
+Exemplo de `id`: `PROD-001`, `PROD-002`, `PROD-003`.
+
+Para estoque atual, preencha `estoque_atual`. As saidas novas devem ser registradas pelo sistema para criar historico em `movements`.

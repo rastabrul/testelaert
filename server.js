@@ -2,18 +2,15 @@ const crypto = require("crypto");
 const fs = require("fs/promises");
 const path = require("path");
 const express = require("express");
+const { createClient } = require("@supabase/supabase-js");
 
 const PORT = Number(process.env.PORT || 3000);
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "admin";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || crypto.randomBytes(10).toString("base64url");
 const COOKIE_NAME = "almox_session";
-const USE_APPS_SCRIPT = Boolean(process.env.GOOGLE_APPS_SCRIPT_URL);
-const USE_SHEETS_API = !USE_APPS_SCRIPT && Boolean(
-  process.env.GOOGLE_SHEET_ID &&
-  process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL &&
-  process.env.GOOGLE_PRIVATE_KEY
-);
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY;
+const USE_SUPABASE = Boolean(process.env.SUPABASE_URL && SUPABASE_KEY);
 
 const TABLES = {
   products: {
@@ -130,15 +127,15 @@ app.use(express.static(path.join(__dirname, "public")));
 let store;
 
 async function main() {
-  store = USE_APPS_SCRIPT ? new AppsScriptStore() : USE_SHEETS_API ? new SheetsStore() : new LocalStore();
+  store = USE_SUPABASE ? new SupabaseStore() : new LocalStore();
   await store.init();
   await ensureAdminUser();
 
   if (!process.env.ADMIN_PASSWORD) {
     console.log(`Senha inicial do admin gerada: ${ADMIN_PASSWORD}`);
   }
-  if (!USE_APPS_SCRIPT && !USE_SHEETS_API) {
-    console.log("Google Sheets não configurado. Usando data/local-db.json para desenvolvimento.");
+  if (!USE_SUPABASE) {
+    console.log("Supabase nao configurado. Usando data/local-db.json para desenvolvimento.");
   }
 
   registerRoutes();
@@ -388,67 +385,58 @@ function registerRoutes() {
   });
 }
 
-class AppsScriptStore {
+class SupabaseStore {
   constructor() {
-    this.url = process.env.GOOGLE_APPS_SCRIPT_URL;
-  }
-
-  async init() {
-    await this.request("init", {
-      tables: Object.values(TABLES).map((table) => ({
-        title: table.title,
-        headers: table.headers
-      }))
+    this.client = createClient(process.env.SUPABASE_URL, SUPABASE_KEY, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
     });
   }
 
+  async init() {
+    const { error } = await this.client.from("app_users").select("id").limit(1);
+    if (error) {
+      throw new Error(`Supabase conectado, mas as tabelas nao estao prontas. Rode o arquivo supabase-schema.sql no SQL Editor. Detalhe: ${error.message}`);
+    }
+  }
+
   async read(title) {
-    const response = await this.request("read", { title });
-    return response.rows || [];
+    const table = supabaseTableByTitle(title);
+    let query = this.client.from(table.name).select("*");
+    if (table.order) query = query.order(table.order, { ascending: table.ascending !== false });
+
+    const { data, error } = await query;
+    if (error) this.fail(`ler ${table.name}`, error);
+    return (data || []).map(table.toApp);
   }
 
   async write(title, rows) {
-    await this.request("write", { title, rows });
+    const table = supabaseTableByTitle(title);
+    if (!rows.length) return;
+
+    const { error } = await this.client
+      .from(table.name)
+      .upsert(rows.map(table.toDb), { onConflict: table.conflict || "id" });
+
+    if (error) this.fail(`salvar ${table.name}`, error);
   }
 
   async append(title, row) {
-    await this.request("append", { title, row });
+    const table = supabaseTableByTitle(title);
+    const { error } = await this.client.from(table.name).insert(table.toDb(row));
+    if (error) this.fail(`inserir ${table.name}`, error);
   }
 
   async bulkWrite(tables) {
-    await this.request("bulkWrite", { tables });
+    for (const [title, rows] of Object.entries(tables)) {
+      await this.write(title, rows);
+    }
   }
 
-  async request(action, payload = {}) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
-    let response;
-    try {
-      response = await fetch(this.url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, ...payload }),
-        signal: controller.signal
-      });
-    } catch (error) {
-      if (error.name === "AbortError") {
-        throw new Error("O Apps Script demorou para responder. Confira a URL /exec no Render e a implantacao do script.");
-      }
-      throw new Error(`Falha ao chamar o Apps Script: ${error.message}`);
-    } finally {
-      clearTimeout(timeout);
-    }
-    const text = await response.text();
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch (_error) {
-      throw new Error(`Apps Script retornou uma resposta inválida: ${text.slice(0, 180)}`);
-    }
-    if (!response.ok || data.ok === false) {
-      throw new Error(data.message || "Falha ao acessar o Apps Script.");
-    }
-    return data;
+  fail(operation, error) {
+    throw new Error(`Falha no Supabase ao ${operation}: ${error.message}`);
   }
 }
 
@@ -495,81 +483,6 @@ class LocalStore {
 
   async save() {
     await fs.writeFile(this.file, JSON.stringify(this.data, null, 2));
-  }
-}
-
-class SheetsStore {
-  constructor() {
-    const { google } = require("googleapis");
-    const privateKey = process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n");
-    this.spreadsheetId = process.env.GOOGLE_SHEET_ID;
-    this.auth = new google.auth.JWT({
-      email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-      key: privateKey,
-      scopes: ["https://www.googleapis.com/auth/spreadsheets"]
-    });
-    this.sheets = google.sheets({ version: "v4", auth: this.auth });
-  }
-
-  async init() {
-    const metadata = await this.sheets.spreadsheets.get({ spreadsheetId: this.spreadsheetId });
-    const existing = new Set(metadata.data.sheets.map((sheet) => sheet.properties.title));
-    const requests = Object.values(TABLES)
-      .filter((table) => !existing.has(table.title))
-      .map((table) => ({ addSheet: { properties: { title: table.title } } }));
-
-    if (requests.length) {
-      await this.sheets.spreadsheets.batchUpdate({
-        spreadsheetId: this.spreadsheetId,
-        requestBody: { requests }
-      });
-    }
-
-    for (const table of Object.values(TABLES)) {
-      await this.sheets.spreadsheets.values.update({
-        spreadsheetId: this.spreadsheetId,
-        range: `${quoteSheet(table.title)}!A1:${columnName(table.headers.length)}1`,
-        valueInputOption: "RAW",
-        requestBody: { values: [table.headers] }
-      });
-    }
-  }
-
-  async read(title) {
-    const table = tableByTitle(title);
-    const response = await this.sheets.spreadsheets.values.get({
-      spreadsheetId: this.spreadsheetId,
-      range: `${quoteSheet(title)}!A2:${columnName(table.headers.length)}100000`
-    });
-    return (response.data.values || [])
-      .filter((row) => row.some((value) => clean(value)))
-      .map((row) => Object.fromEntries(table.headers.map((header, index) => [header, row[index] ?? ""])));
-  }
-
-  async write(title, rows) {
-    const table = tableByTitle(title);
-    await this.sheets.spreadsheets.values.clear({
-      spreadsheetId: this.spreadsheetId,
-      range: `${quoteSheet(title)}!A2:${columnName(table.headers.length)}100000`
-    });
-    if (!rows.length) return;
-    await this.sheets.spreadsheets.values.update({
-      spreadsheetId: this.spreadsheetId,
-      range: `${quoteSheet(title)}!A2`,
-      valueInputOption: "RAW",
-      requestBody: { values: rows.map((row) => table.headers.map((header) => serializeCell(row[header]))) }
-    });
-  }
-
-  async append(title, row) {
-    const table = tableByTitle(title);
-    await this.sheets.spreadsheets.values.append({
-      spreadsheetId: this.spreadsheetId,
-      range: `${quoteSheet(title)}!A1`,
-      valueInputOption: "RAW",
-      insertDataOption: "INSERT_ROWS",
-      requestBody: { values: [table.headers.map((header) => serializeCell(row[header]))] }
-    });
   }
 }
 
@@ -981,36 +894,170 @@ function generatePassword() {
   return `Senha-${crypto.randomBytes(5).toString("base64url")}`;
 }
 
-function serializeCell(value) {
-  if (value === undefined || value === null) return "";
-  if (typeof value === "object") return JSON.stringify(value);
-  return String(value);
-}
+const SUPABASE_TABLES = {
+  [TABLES.products.title]: {
+    name: "products",
+    order: "nome",
+    conflict: "id",
+    toApp: (row) => ({
+      id: row.id,
+      nome: row.nome,
+      sku: row.sku,
+      categoria: row.categoria,
+      localizacao: row.localizacao,
+      estoqueInicial: row.estoque_inicial,
+      estoqueAtual: row.estoque_atual,
+      estoqueMinimo: row.estoque_minimo,
+      precoCusto: row.preco_custo,
+      precoVenda: row.preco_venda,
+      ativo: row.ativo,
+      criadoEm: row.criado_em,
+      atualizadoEm: row.atualizado_em
+    }),
+    toDb: (row) => ({
+      id: clean(row.id),
+      nome: clean(row.nome),
+      sku: clean(row.sku),
+      categoria: clean(row.categoria),
+      localizacao: clean(row.localizacao),
+      estoque_inicial: toNumber(row.estoqueInicial),
+      estoque_atual: toNumber(row.estoqueAtual),
+      estoque_minimo: toNumber(row.estoqueMinimo),
+      preco_custo: toNumber(row.precoCusto),
+      preco_venda: toNumber(row.precoVenda),
+      ativo: parseBoolean(row.ativo, true),
+      criado_em: clean(row.criadoEm) || now(),
+      atualizado_em: clean(row.atualizadoEm) || now()
+    })
+  },
+  [TABLES.users.title]: {
+    name: "app_users",
+    order: "nome",
+    conflict: "id",
+    toApp: (row) => ({
+      id: row.id,
+      nome: row.nome,
+      usuario: row.usuario,
+      senhaHash: row.senha_hash,
+      papel: row.papel,
+      permissoes: jsonForApp(row.permissoes),
+      ativo: row.ativo,
+      criadoEm: row.criado_em,
+      atualizadoEm: row.atualizado_em
+    }),
+    toDb: (row) => ({
+      id: clean(row.id),
+      nome: clean(row.nome),
+      usuario: clean(row.usuario),
+      senha_hash: clean(row.senhaHash),
+      papel: clean(row.papel || "vendedor"),
+      permissoes: jsonForDb(row.permissoes),
+      ativo: parseBoolean(row.ativo, true),
+      criado_em: clean(row.criadoEm) || now(),
+      atualizado_em: clean(row.atualizadoEm) || now()
+    })
+  },
+  [TABLES.movements.title]: {
+    name: "movements",
+    order: "criado_em",
+    conflict: "id",
+    toApp: (row) => ({
+      id: row.id,
+      tipo: row.tipo,
+      produtoId: row.produto_id,
+      quantidade: row.quantidade,
+      custoUnitario: row.custo_unitario,
+      vendaUnitario: row.venda_unitario,
+      usuarioId: row.usuario_id,
+      vendedorId: row.vendedor_id,
+      os: row.os,
+      observacao: row.observacao,
+      criadoEm: row.criado_em
+    }),
+    toDb: (row) => ({
+      id: clean(row.id),
+      tipo: clean(row.tipo || "saida"),
+      produto_id: clean(row.produtoId),
+      quantidade: toNumber(row.quantidade),
+      custo_unitario: toNumber(row.custoUnitario),
+      venda_unitario: toNumber(row.vendaUnitario),
+      usuario_id: clean(row.usuarioId),
+      vendedor_id: clean(row.vendedorId),
+      os: clean(row.os),
+      observacao: clean(row.observacao),
+      criado_em: clean(row.criadoEm) || now()
+    })
+  },
+  [TABLES.logs.title]: {
+    name: "app_logs",
+    order: "criado_em",
+    conflict: "id",
+    toApp: (row) => ({
+      id: row.id,
+      usuarioId: row.usuario_id,
+      usuarioNome: row.usuario_nome,
+      acao: row.acao,
+      entidade: row.entidade,
+      entidadeId: row.entidade_id,
+      detalhes: jsonForApp(row.detalhes),
+      ip: row.ip,
+      criadoEm: row.criado_em
+    }),
+    toDb: (row) => ({
+      id: clean(row.id),
+      usuario_id: clean(row.usuarioId),
+      usuario_nome: clean(row.usuarioNome),
+      acao: clean(row.acao),
+      entidade: clean(row.entidade),
+      entidade_id: clean(row.entidadeId),
+      detalhes: jsonForDb(row.detalhes),
+      ip: clean(row.ip),
+      criado_em: clean(row.criadoEm) || now()
+    })
+  },
+  [TABLES.settings.title]: {
+    name: "settings",
+    order: "chave",
+    conflict: "chave",
+    toApp: (row) => ({
+      chave: row.chave,
+      valor: row.valor,
+      atualizadoEm: row.atualizado_em
+    }),
+    toDb: (row) => ({
+      chave: clean(row.chave),
+      valor: clean(row.valor),
+      atualizado_em: clean(row.atualizadoEm) || now()
+    })
+  }
+};
 
-function tableByTitle(title) {
-  const table = Object.values(TABLES).find((entry) => entry.title === title);
-  if (!table) throw new Error(`Tabela desconhecida: ${title}`);
+function supabaseTableByTitle(title) {
+  const table = SUPABASE_TABLES[title];
+  if (!table) throw new Error(`Tabela Supabase desconhecida: ${title}`);
   return table;
 }
 
-function storageMode() {
-  if (USE_APPS_SCRIPT) return "apps-script";
-  if (USE_SHEETS_API) return "sheets-api";
-  return "local";
+function jsonForApp(value) {
+  if (value === undefined || value === null || value === "") return "{}";
+  if (typeof value === "string") return value;
+  return JSON.stringify(value);
 }
 
-function quoteSheet(title) {
-  return `'${title.replace(/'/g, "''")}'`;
-}
-
-function columnName(index) {
-  let name = "";
-  while (index > 0) {
-    const remainder = (index - 1) % 26;
-    name = String.fromCharCode(65 + remainder) + name;
-    index = Math.floor((index - 1) / 26);
+function jsonForDb(value) {
+  if (typeof value === "object" && value !== null) return value;
+  const text = clean(value);
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch (_error) {
+    return { texto: text };
   }
-  return name;
+}
+
+function storageMode() {
+  if (USE_SUPABASE) return "supabase";
+  return "local";
 }
 
 main().catch((error) => {
